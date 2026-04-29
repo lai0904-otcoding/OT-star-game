@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>OT 復健挑戰 - 小星星全曲版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #2c3e50; font-family: sans-serif; touch-action: none; }
+        #start-screen, #end-screen { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.85); display: flex; flex-direction: column; 
+            justify-content: center; align-items: center; z-index: 100; color: white; text-align: center;
+        }
+        #end-screen { display: none; }
+        .btn { 
+            padding: 20px 50px; font-size: 24px; background: #2ecc71; 
+            color: white; border: none; border-radius: 50px; cursor: pointer; margin-top: 20px;
+        }
+        #ui-layer { 
+            position: absolute; top: 20px; width: 100%; display: flex; 
+            justify-content: space-around; z-index: 10; pointer-events: none; 
+        }
+        .stat-box { 
+            background: rgba(255, 255, 255, 0.9); padding: 10px 20px; 
+            border-radius: 12px; font-weight: bold; font-size: 1.2rem; color: #333;
+        }
+        .success { color: #27ae60; }
+        .fail { color: #c0392b; }
+        canvas { display: block; background: #fff; }
+    </style>
+</head>
+<body>
+    <div id="start-screen">
+        <h1>《小星星》完整挑戰</h1>
+        <p>訓練目標：成功點擊 20 次即可通關<br>注意：漏接 5 次則失敗</p>
+        <button id="start-btn" class="btn">開始復健</button>
+    </div>
+
+    <div id="end-screen">
+        <h1 id="result-text"></h1>
+        <p id="result-score"></p>
+        <button onclick="location.reload()" class="btn">重新開始</button>
+    </div>
+
+    <div id="ui-layer">
+        <div class="stat-box">成功: <span id="score" class="success">0</span> / 20</div>
+        <div class="stat-box">漏接: <span id="miss" class="fail">0</span> / 5</div>
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const tones = { '1': 261.6, '2': 293.7, '3': 329.6, '4': 349.2, '5': 392.0, '6': 440.0 };
+let audioCtx, gameActive = false, score = 0, miss = 0, frameCount = 0;
+const speed = 10; 
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+const lanes = 4, laneWidth = canvas.width / lanes, blocks = [];
+
+// --- 完整的《小星星》譜面邏輯 ---
+function getFullSongData(offsetFrames) {
+    const s = offsetFrames;
+    const interval = 40; // 快速節奏間隔
+    return [
+        // 第一段：1 1 5 5 6 6 5 -
+        {lane: 0, tone: tones['1'], time: s + interval*1}, {lane: 0, tone: tones['1'], time: s + interval*2},
+        {lane: 2, tone: tones['5'], time: s + interval*3}, {lane: 2, tone: tones['5'], time: s + interval*4},
+        {lane: 3, tone: tones['6'], time: s + interval*5}, {lane: 3, tone: tones['6'], time: s + interval*6},
+        {lane: 2, tone: tones['5'], time: s + interval*8},
+        // 4 4 3 3 2 2 1 -
+        {lane: 1, tone: tones['4'], time: s + interval*9}, {lane: 1, tone: tones['4'], time: s + interval*10},
+        {lane: 2, tone: tones['3'], time: s + interval*11}, {lane: 2, tone: tones['3'], time: s + interval*12},
+        {lane: 0, tone: tones['2'], time: s + interval*13}, {lane: 0, tone: tones['2'], time: s + interval*14},
+        {lane: 1, tone: tones['1'], time: s + interval*16},
+        // 中間段：5 5 4 4 3 3 2 - (重覆)
+        {lane: 2, tone: tones['5'], time: s + interval*17}, {lane: 2, tone: tones['5'], time: s + interval*18},
+        {lane: 1, tone: tones['4'], time: s + interval*19}, {lane: 1, tone: tones['4'], time: s + interval*20},
+        {lane: 2, tone: tones['3'], time: s + interval*21}, {lane: 2, tone: tones['3'], time: s + interval*22},
+        {lane: 0, tone: tones['2'], time: s + interval*24},
+        {lane: 2, tone: tones['5'], time: s + interval*25}, {lane: 2, tone: tones['5'], time: s + interval*26},
+        {lane: 1, tone: tones['4'], time: s + interval*27}, {lane: 1, tone: tones['4'], time: s + interval*28},
+        {lane: 2, tone: tones['3'], time: s + interval*29}, {lane: 2, tone: tones['3'], time: s + interval*30},
+        {lane: 0, tone: tones['2'], time: s + interval*32}
+    ];
+}
+
+let songData = [];
+// 預先生成足夠長的譜面
+for(let j=0; j<5; j++) { songData = songData.concat(getFullSongData(j * 1500)); }
+
+function initAudio() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playTone(freq) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+}
+
+document.getElementById('start-btn').addEventListener('click', () => {
+    initAudio();
+    document.getElementById('start-screen').style.display = 'none';
+    gameActive = true;
+    update();
+});
+
+function endGame(isWin) {
+    gameActive = false;
+    const screen = document.getElementById('end-screen');
+    const title = document.getElementById('result-text');
+    const info = document.getElementById('result-score');
+    screen.style.display = 'flex';
+    if(isWin) {
+        title.innerText = "🎉 通關成功！";
+        title.style.color = "#2ecc71";
+        info.innerText = "順利點擊 20 次，復健目標達成！";
+    } else {
+        title.innerText = "❌ 挑戰失敗";
+        title.style.color = "#e74c3c";
+        info.innerText = "別灰心，這能訓練大腦反應，再來一次！";
+    }
+}
+
+function update() {
+    if (!gameActive) return;
+    frameCount++;
+
+    songData.forEach(note => {
+        if (note.time === frameCount) blocks.push({ x: note.lane * laneWidth + 10, y: -150, w: laneWidth - 20, h: 140, tone: note.tone, clicked: false });
+    });
+
+    for (let i = blocks.length - 1; i >= 0; i--) {
+        blocks[i].y += speed;
+        if (blocks[i].y > canvas.height && !blocks[i].clicked) {
+            miss++;
+            document.getElementById('miss').innerText = miss;
+            blocks.splice(i, 1);
+            if(miss >= 5) { endGame(false); return; }
+        }
+    }
+
+    if(score >= 20) { endGame(true); return; }
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#eee';
+    for (let i = 1; i < lanes; i++) {
+        ctx.beginPath(); ctx.moveTo(i * laneWidth, 0); ctx.lineTo(i * laneWidth, canvas.height); ctx.stroke();
+    }
+    blocks.forEach(b => {
+        ctx.fillStyle = b.clicked ? '#2ecc71' : '#34495e';
+        ctx.beginPath();
+        ctx.roundRect(b.x, b.y, b.w, b.h, 15);
+        ctx.fill();
+    });
+}
+
+canvas.addEventListener('touchstart', (e) => {
+    if(!gameActive) return;
+    e.preventDefault();
+    const touch = e.touches[0];
+    const rect = canvas.getBoundingClientRect();
+    const tx = touch.clientX - rect.left;
+    const ty = touch.clientY - rect.top;
+
+    blocks.forEach((b) => {
+        if (tx > b.x - 20 && tx < b.x + b.w + 20 && ty > b.y - 20 && ty < b.y + b.h + 20) {
+            if (!b.clicked) {
+                score++;
+                document.getElementById('score').innerText = score;
+                b.clicked = true;
+                playTone(b.tone);
+                setTimeout(() => { 
+                    const idx = blocks.indexOf(b);
+                    if(idx > -1) blocks.splice(idx, 1); 
+                }, 80);
+            }
+        }
+    });
+});
+</script>
+</body>
+</html>
